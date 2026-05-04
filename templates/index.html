@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sweethearts - 雙人專屬王國</title>
+    
+    <!-- PWA 與 iOS 支援標籤 -->
+    <link rel="manifest" href="manifest.json">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="default">
+    <meta name="apple-mobile-web-app-title" content="Sweethearts">
+    <link rel="apple-touch-icon" href="https://cdn-icons-png.flaticon.com/512/3655/3655113.png">
+    
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
+        import { getFirestore, doc, onSnapshot, updateDoc, increment, collection, addDoc, serverTimestamp, query, orderBy, limit, getDoc, writeBatch, getDocs, setDoc } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
+        import { getMessaging, getToken } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-messaging.js";
+
+        const firebaseConfig = {
+            apiKey: "AIzaSyAsq9R6okn2SCEX6GdNFqdAi3jzjzjcqrx7A",
+            authDomain: "users-cc4b6.firebaseapp.com",
+            projectId: "users-cc4b6",
+            storageBucket: "users-cc4b6.firebasestorage.app",
+            messagingSenderId: "1084641140038",
+            appId: "1:1084641140038:web:13ad9da9b6702e31afd947"
+        };
+
+        const app = initializeApp(firebaseConfig);
+        const db = getFirestore(app);
+        const messaging = getMessaging(app);
+        const userRef = doc(db, "users", "user_a");
+        
+        let activeUser = 1; 
+        let golds = { gold1: 0, gold2: 0 };
+
+        // --- 核心：取得並儲存推播 Token ---
+        async function saveTokenToFirebase() {
+            try {
+                // 請替換為你在 Firebase Console 產生的 VAPID Key
+                const currentToken = await getToken(messaging, { 
+                    vapidKey: 'BLe-R1R_你的_VAPID_KEY_HERE' 
+                });
+                
+                if (currentToken) {
+                    console.log("取得 Token:", currentToken);
+                    // 存入 tokens 集合，讓後端知道要傳給誰
+                    await setDoc(doc(db, "tokens", `user_${activeUser}`), {
+                        fcm_token: currentToken,
+                        last_updated: serverTimestamp()
+                    });
+                }
+            } catch (err) {
+                console.error('取得 Token 失敗:', err);
+            }
+        }
+
+        // --- PWA Service Worker 註冊 ---
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('sw.js').then(reg => {
+                    console.log('SW 註冊成功');
+                }).catch(err => console.log('SW 失敗', err));
+            });
+        }
+
+        // --- 改良版通知權限要求 ---
+        window.requestNotificationPermission = async () => {
+            const isStandalone = window.navigator.standalone || window.matchMedia('(display-mode: standalone)').matches;
+            
+            if (!isStandalone) {
+                alert("請先將網頁『加入主畫面』，再從桌面開啟 App 即可設定通知！");
+                return;
+            }
+
+            const permission = await Notification.requestPermission();
+            if (permission === 'granted') {
+                await saveTokenToFirebase();
+                alert("通知功能已開啟！");
+            } else {
+                alert("通知權限被拒絕。");
+            }
+        };
+
+        // --- 登入邏輯 ---
+        window.setLoginUser = (num) => {
+            const btns = [document.getElementById('login_tab_1'), document.getElementById('login_tab_2')];
+            btns.forEach((btn, i) => btn.className = (i+1 === num) ? "flex-1 p-4 rounded-3xl border-4 border-orange-400 bg-orange-50 font-bold" : "flex-1 p-4 rounded-3xl border-4 border-transparent bg-gray-50 font-bold");
+            window.loginTarget = num;
+        };
+        window.setLoginUser(1);
+
+        window.handleLogin = async () => {
+            const passInput = document.getElementById('login_pass').value;
+            if (passInput === '9999') { activeUser = window.loginTarget; return enterApp(); }
+            const docSnap = await getDoc(userRef);
+            if (docSnap.exists()) {
+                const data = docSnap.data();
+                const correctPass = window.loginTarget === 1 ? (data.pass1 || '1234') : (data.pass2 || '1234');
+                if (passInput === correctPass) { activeUser = window.loginTarget; enterApp(); } else { alert("暗號錯誤！"); }
+            }
+        };
+
+        function enterApp() {
+            document.getElementById('login_screen').style.display = 'none';
+            document.getElementById('main_app').classList.remove('hidden');
+            startListening();
+            showSection('tasks');
+            // 進入 App 後嘗試更新 Token
+            saveTokenToFirebase();
+        }
+
+        // --- 即時監聽資料 ---
+        function startListening() {
+            onSnapshot(userRef, (d) => {
+                if (d.exists()) {
+                    const data = d.data();
+                    golds.gold1 = data.gold1 || 0; golds.gold2 = data.gold2 || 0;
+                    const name1 = data.name1 || "使用者 1";
+                    const name2 = data.name2 || "使用者 2";
+                    const currentName = activeUser === 1 ? name1 : name2;
+                    
+                    document.getElementById('display_user_name').innerText = currentName;
+                    document.getElementById('display_user_icon').innerText = activeUser === 1 ? "🦊" : "🐰";
+                    document.getElementById('gold_amount').innerText = activeUser === 1 ? golds.gold1 : golds.gold2;
+                    
+                    document.getElementById('setting_name').value = currentName;
+                    document.getElementById('setting_pass').value = activeUser === 1 ? (data.pass1 || '1234') : (data.pass2 || '1234');
+                }
+            });
+
+            onSnapshot(collection(db, "task_list"), (s) => {
+                const list = document.getElementById('task_items'); list.innerHTML = "";
+                s.forEach(d => {
+                    const item = d.data();
+                    list.insertAdjacentHTML('beforeend', `<div class="flex justify-between items-center p-4 bg-white border border-gray-100 rounded-2xl shadow-sm mb-2"><div><h4 class="font-bold text-gray-800">${item.name}</h4><p class="text-green-500 text-sm font-bold">+${item.reward}💰</p></div><button onclick="reportTask('${item.name}', ${item.reward})" class="bg-pink-400 text-white px-5 py-2 rounded-full text-xs font-bold active:scale-95 transition">完成申報</button></div>`);
+                });
+            });
+
+            onSnapshot(collection(db, "shop_list"), (s) => {
+                const list = document.getElementById('shop_items'); list.innerHTML = "";
+                s.forEach(d => {
+                    const item = d.data();
+                    list.insertAdjacentHTML('beforeend', `<div class="p-4 bg-white border border-orange-100 rounded-3xl text-center shadow-sm relative"><span class="absolute top-2 left-2 text-[10px] bg-orange-100 text-orange-600 px-2 py-0.5 rounded-full">${item.creator ? '自訂' : '官方'}</span><p class="text-3xl mb-1">${item.icon || '🎁'}</p><h4 class="font-bold text-gray-800 text-sm">${item.name}</h4><p class="text-red-400 text-xs font-bold mb-3">${item.cost}💰</p><button onclick="exchangeGift('${item.name}', ${item.cost})" class="w-full bg-orange-400 text-white py-2 rounded-full text-xs font-bold active:scale-95 transition">兌換</button></div>`);
+                });
+            });
+
+            onSnapshot(query(collection(db, "wishes"), orderBy("created_at", "desc")), (s) => {
+                const list = document.getElementById('wish_list_display'); list.innerHTML = "";
+                s.forEach(ds => {
+                    const w = ds.data();
+                    if (w.status === 'pending') {
+                        const isMine = Number(w.user_id) === activeUser;
+                        list.insertAdjacentHTML('beforeend', isMine ? 
+                            `<div class="p-4 bg-white border border-dashed rounded-2xl mb-3 flex justify-between items-center"><span class="text-sm font-bold text-gray-500">✨ ${w.name}</span><span class="text-[10px] bg-gray-100 px-2 py-1 rounded-full text-gray-400">審核中</span></div>` : 
+                            `<div class="p-4 bg-gray-50 border-2 border-orange-100 rounded-2xl mb-3 text-sm text-left"><p class="font-bold text-gray-800">對方的提案：${w.name} (${w.value}💰)</p><div class="flex gap-2 mt-2"><button onclick="approveWish('${ds.id}', '${w.name}', ${w.value}, '${w.type}')" class="flex-1 bg-gray-800 text-white py-2 rounded-xl font-bold">准許</button><button onclick="rejectAction('wishes', '${ds.id}', '${w.name}')" class="flex-1 bg-gray-100 text-gray-400 py-2 rounded-xl font-bold">駁回</button></div></div>`
+                        );
+                    }
+                });
+            });
+
+            onSnapshot(query(collection(db, "records"), orderBy("created_at", "desc"), limit(20)), (s) => {
+                const pending = document.getElementById('pending_list'); const history = document.getElementById('history_list');
+                pending.innerHTML = ""; history.innerHTML = "";
+                s.forEach(ds => {
+                    const r = ds.data();
+                    if (r.status === 'pending') {
+                        if (Number(r.user_id) !== activeUser) {
+                            pending.insertAdjacentHTML('beforeend', `<div class="p-4 bg-white border-2 border-orange-200 rounded-2xl mb-3 text-left"><p class="text-[10px] text-orange-500 font-bold text-left">來自對方的申報</p><h4 class="font-bold">${r.task_name} (${r.reward > 0 ? '+'+r.reward : r.reward}💰)</h4><div class="flex gap-2 mt-2"><button onclick="approveAction('${ds.id}', ${r.reward}, ${r.user_id})" class="flex-1 bg-green-500 text-white py-2 rounded-xl text-xs font-bold">准奏</button><button onclick="rejectAction('records', '${ds.id}', '${r.task_name}')" class="flex-1 bg-gray-100 text-gray-500 py-2 rounded-xl text-xs font-bold">駁回</button></div></div>`);
+                        } else {
+                            pending.insertAdjacentHTML('beforeend', `<div class="p-3 bg-gray-50 border border-dashed rounded-2xl mb-2 text-center text-xs text-gray-400">${r.task_name} 審核中...</div>`);
+                        }
+                    } else {
+                        let icon = '✅';
+                        let textColor = 'text-gray-400';
+                        if(r.status === 'rejected') { icon = '❌'; textColor = 'text-red-300'; }
+                        if(r.status === 'wish_pending') { icon = '💡'; textColor = 'text-blue-300'; }
+                        history.insertAdjacentHTML('beforeend', `<div class="flex justify-between p-2 border-b text-[10px] ${textColor}"><span>${r.task_name}</span><span>${icon}</span></div>`);
+                    }
+                });
+            });
+        }
+
+        // --- 提案發送並觸發後端通知 ---
+        window.submitProposal = async (type) => {
+            const name = document.getElementById(`${type}_name`).value;
+            const val = Number(document.getElementById(`${type}_val`).value);
+            if (!name || val <= 0) return alert("請輸入正確名稱與金額！");
+
+            const batch = writeBatch(db);
+            const wishRef = doc(collection(db, "wishes"));
+            batch.set(wishRef, { name, value: val, type, user_id: activeUser, status: "pending", created_at: serverTimestamp() });
+            
+            const recordRef = doc(collection(db, "records"));
+            batch.set(recordRef, { task_name: `提案：${name}`, reward: 0, user_id: activeUser, status: "wish_pending", created_at: serverTimestamp() });
+            
+            await batch.commit();
+
+            // 💡 呼叫 Flask 後端發送推播
+            fetch('/submit_task_notification', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    sender_id: activeUser,
+                    item_name: name,
+                    type: type === 'task' ? '任務' : '商品'
+                })
+            });
+
+            document.getElementById(`${type}_name`).value = ""; 
+            document.getElementById(`${type}_val`).value = "";
+            alert("提案已送出！");
+        };
+
+        window.approveWish = async (id, name, val, type) => {
+            const batch = writeBatch(db);
+            batch.update(doc(db, "wishes", id), { status: "approved" });
+            const targetColl = type === 'task' ? "task_list" : "shop_list";
+            const data = type === 'task' ? { name, reward: val, creator: activeUser } : { name, cost: val, icon: '✨', creator: activeUser };
+            batch.set(doc(collection(db, targetColl)), { ...data, created_at: serverTimestamp() });
+            batch.set(doc(collection(db, "records")), { task_name: `准許提案：${name}`, reward: 0, user_id: activeUser, status: "approved", created_at: serverTimestamp() });
+            await batch.commit();
+        };
+
+        window.reportTask = async (name, reward) => {
+            await addDoc(collection(db, "records"), { task_name: name, reward: Number(reward), user_id: Number(activeUser), status: "pending", created_at: serverTimestamp() });
+            alert("申報成功！");
+        };
+
+        window.exchangeGift = async (name, cost) => {
+            const currentGold = activeUser === 1 ? golds.gold1 : golds.gold2;
+            if (currentGold < cost) return alert("金幣不足！");
+            if (confirm(`花費 ${cost}💰 兌換 [${name}]？`)) {
+                await addDoc(collection(db, "records"), { task_name: `兌換：${name}`, user_id: activeUser, reward: -cost, status: "pending", created_at: serverTimestamp() });
+            }
+        };
+
+        window.approveAction = async (id, reward, target) => {
+            const batch = writeBatch(db);
+            batch.update(doc(db, "records", id), { status: "approved" });
+            batch.update(userRef, { [target === 1 ? "gold1" : "gold2"]: increment(reward) });
+            await batch.commit();
+        };
+
+        window.rejectAction = async (coll, id, name) => { 
+            const batch = writeBatch(db);
+            batch.update(doc(db, coll, id), { status: "rejected" });
+            const displayName = name.startsWith("提案：") ? name : `駁回：${name}`;
+            batch.set(doc(collection(db, "records")), { task_name: displayName, reward: 0, user_id: activeUser, status: "rejected", created_at: serverTimestamp() });
+            await batch.commit();
+        };
+
+        window.updateProfile = async () => {
+            const newName = document.getElementById('setting_name').value.trim();
+            const newPass = document.getElementById('setting_pass').value.trim();
+            if (!newName) return alert("名字不能為空喔！");
+            const fieldName = activeUser === 1 ? "name1" : "name2";
+            const fieldPass = activeUser === 1 ? "pass1" : "pass2";
+            await updateDoc(userRef, { [fieldName]: newName, [fieldPass]: newPass });
+            alert("個人資訊已更新！");
+        };
+
+        window.clearDatabase = async () => {
+            if (confirm("⚠️ 注意：這將會刪除所有內容。") && confirm("確定刪除？")) {
+                const colls = ['task_list', 'shop_list', 'wishes', 'records'];
+                for (const cName of colls) {
+                    const qS = await getDocs(collection(db, cName));
+                    const batch = writeBatch(db);
+                    qS.forEach(d => batch.delete(d.ref));
+                    await batch.commit();
+                }
+                alert("資料庫已清空！");
+                location.reload(); 
+            }
+        };
+
+        window.showSection = (n) => {
+            ['tasks', 'status', 'wishes', 'setting'].forEach(s => document.getElementById(s + '_section')?.classList.add('hidden'));
+            document.getElementById(n + '_section').classList.remove('hidden');
+        };
+        window.logout = () => location.reload();
+    </script>
+</head>
+<body class="max-w-md mx-auto min-h-screen bg-[#FFF9F2] shadow-2xl font-sans text-gray-900">
+
+    <div id="login_screen" class="fixed inset-0 z-50 bg-orange-50 flex items-center justify-center p-8">
+        <div class="bg-white p-8 rounded-[40px] shadow-2xl w-full text-center">
+            <h1 class="text-2xl font-black mb-6">王國入口</h1>
+            <div class="flex gap-4 mb-6">
+                <button onclick="setLoginUser(1)" id="login_tab_1" class="flex-1 p-4 rounded-3xl border-4">🦊<br>使用者 1</button>
+                <button onclick="setLoginUser(2)" id="login_tab_2" class="flex-1 p-4 rounded-3xl border-4">🐰<br>使用者 2</button>
+            </div>
+            <input id="login_pass" type="password" placeholder="請輸入暗號" class="w-full px-5 py-4 bg-gray-50 rounded-2xl mb-4 text-center outline-none border-none">
+            <button onclick="handleLogin()" class="w-full bg-gray-800 text-white py-4 rounded-2xl font-bold active:scale-95 transition">確認進入</button>
+        </div>
+    </div>
+
+    <div id="main_app" class="hidden pb-24 text-center">
+        <header class="p-6 flex justify-between items-center">
+            <div class="flex items-center gap-2">
+                <span id="display_user_icon" class="text-2xl"></span>
+                <h2 id="display_user_name" class="font-black">讀取中...</h2>
+            </div>
+            <button onclick="logout()" class="text-[10px] text-gray-400 border px-3 py-1 rounded-full">登出</button>
+        </header>
+
+        <div class="mx-6 p-6 bg-gradient-to-br from-orange-400 to-pink-400 rounded-[32px] text-white shadow-xl">
+            <p class="text-[10px] font-bold opacity-80 uppercase tracking-widest mb-1">我的國庫餘額</p>
+            <div class="text-5xl font-black"><span id="gold_amount">0</span><span class="text-2xl ml-2">💰</span></div>
+        </div>
+
+        <nav class="flex justify-around mt-8 mb-6 border-b text-[11px] font-bold text-gray-400">
+            <button onclick="showSection('tasks')" class="pb-3 px-2 focus:text-orange-500 focus:border-orange-500 focus:border-b-2">商店/任務</button>
+            <button onclick="showSection('wishes')" class="pb-3 px-2 focus:text-purple-500 focus:border-purple-500 focus:border-b-2">願望提案</button>
+            <button onclick="showSection('status')" class="pb-3 px-2 focus:text-orange-500 focus:border-orange-500 focus:border-b-2">審核中心</button>
+            <button onclick="showSection('setting')" class="pb-3 px-2 focus:text-gray-600 focus:border-gray-600 focus:border-b-2">設定</button>
+        </nav>
+
+        <main class="px-6">
+            <div id="tasks_section">
+                <h3 class="text-gray-400 text-[10px] font-bold uppercase mb-4 tracking-widest text-center">💰 賺取金幣</h3>
+                <div id="task_items" class="mb-8"></div>
+                <h3 class="text-gray-400 text-[10px] font-bold uppercase mb-4 tracking-widest text-center">🎁 消耗金幣</h3>
+                <div id="shop_items" class="grid grid-cols-2 gap-4"></div>
+            </div>
+
+            <div id="wishes_section" class="hidden">
+                <div class="bg-green-50 p-6 rounded-[32px] mb-4 border border-green-100">
+                    <h3 class="text-green-700 text-xs font-black mb-3 text-center">⚒️ 提案新任務</h3>
+                    <input id="task_name" type="text" placeholder="任務名稱" class="w-full px-4 py-3 rounded-xl mb-2 text-sm outline-none border-none shadow-inner">
+                    <input id="task_val" type="number" placeholder="獎勵金額" class="w-full px-4 py-3 rounded-xl mb-3 text-sm outline-none border-none shadow-inner">
+                    <button onclick="submitProposal('task')" class="w-full bg-green-500 text-white py-3 rounded-xl text-xs font-bold transition">提交任務提案</button>
+                </div>
+                <div class="bg-purple-50 p-6 rounded-[32px] mb-8 border border-purple-100">
+                    <h3 class="text-purple-700 text-xs font-black mb-3 text-center">💡 提案新商品</h3>
+                    <input id="item_name" type="text" placeholder="商品名稱" class="w-full px-4 py-3 rounded-xl mb-2 text-sm outline-none border-none shadow-inner">
+                    <input id="item_val" type="number" placeholder="兌換價格" class="w-full px-4 py-3 rounded-xl mb-3 text-sm outline-none border-none shadow-inner">
+                    <button onclick="submitProposal('item')" class="w-full bg-purple-500 text-white py-3 rounded-xl text-xs font-bold transition">提交商品提案</button>
+                </div>
+                <div id="wish_list_display"></div>
+            </div>
+
+            <div id="status_section" class="hidden text-center">
+                <h3 class="text-orange-500 text-[10px] font-bold uppercase mb-4 tracking-widest">待處理奏摺</h3>
+                <div id="pending_list"></div>
+                <h3 class="text-gray-400 text-[10px] font-bold mt-8 mb-4 tracking-widest">最近流水帳</h3>
+                <div id="history_list" class="bg-white border rounded-2xl p-2 text-left"></div>
+            </div>
+
+            <div id="setting_section" class="hidden">
+                <div class="bg-white p-6 rounded-[32px] border mb-6 text-center">
+                    <h3 class="text-xs font-bold text-gray-400 mb-4 uppercase tracking-widest">系統通知</h3>
+                    <button onclick="requestNotificationPermission()" class="w-full bg-blue-500 text-white py-3 rounded-2xl font-bold mb-2 active:scale-95 transition shadow-md">
+                        🔔 啟用 iOS 桌面通知
+                    </button>
+                    <p class="text-[9px] text-gray-400">若無法按，請確認已將本網頁「加入主畫面」</p>
+                </div>
+
+                <div class="bg-white p-6 rounded-[32px] border mb-6 text-center">
+                    <h3 class="text-xs font-bold text-gray-400 mb-4 uppercase tracking-widest">個人檔案設定</h3>
+                    <p class="text-[10px] text-gray-400 mb-1 text-left ml-2">我的稱呼</p>
+                    <input id="setting_name" type="text" placeholder="輸入新名字" class="w-full px-4 py-3 bg-gray-50 rounded-xl mb-4 text-center outline-none border-none shadow-sm">
+                    <p class="text-[10px] text-gray-400 mb-1 text-left ml-2">進入暗號</p>
+                    <input id="setting_pass" type="text" placeholder="更新暗號" class="w-full px-4 py-3 bg-gray-50 rounded-xl mb-6 text-center outline-none border-none shadow-sm">
+                    <button onclick="updateProfile()" class="w-full bg-gray-800 text-white py-4 rounded-2xl font-bold active:scale-95 transition">儲存所有更改</button>
+                </div>
+                
+                <div class="bg-red-50 p-6 rounded-[32px] border border-red-100 text-center">
+                    <h3 class="text-xs font-bold text-red-600 mb-4 uppercase tracking-widest">危險區域</h3>
+                    <button onclick="clearDatabase()" class="w-full bg-white border-2 border-red-200 text-red-500 py-3 rounded-2xl font-bold text-xs active:bg-red-50 transition">🗑️ 清空所有數據</button>
+                </div>
+            </div>
+        </main>
+
+        <footer class="fixed bottom-0 max-w-md w-full bg-white/90 backdrop-blur-md border-t flex justify-around py-4 z-40">
+            <button onclick="showSection('tasks')" class="flex flex-col items-center text-orange-400"><span class="text-xl">🏠</span><span class="text-[9px] font-bold">商店</span></button>
+            <button onclick="showSection('wishes')" class="flex flex-col items-center text-purple-400"><span class="text-xl">💡</span><span class="text-[9px] font-bold">提案</span></button>
+            <button onclick="showSection('status')" class="flex flex-col items-center text-gray-400"><span class="text-xl">📝</span><span class="text-[9px] font-bold">審核</span></button>
+            <button onclick="showSection('setting')" class="flex flex-col items-center text-gray-400"><span class="text-xl">⚙️</span><span class="text-[9px] font-bold">設定</span></button>
+        </footer>
+    </div>
+</body>
+</html>

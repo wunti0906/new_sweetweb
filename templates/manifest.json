@@ -1,0 +1,15 @@
+{
+  "name": "Sweethearts 雙人專屬王國",
+  "short_name": "Sweethearts",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#FFF9F2",
+  "theme_color": "#FB923C",
+  "icons": [
+    {
+      "src": "https://cdn-icons-png.flaticon.com/512/3655/3655113.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}
